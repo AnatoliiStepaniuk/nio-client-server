@@ -29,19 +29,22 @@ public class NioClient implements Runnable {
     // Maps a SocketChannel to a RspHandler
     private Map rspHandlers = Collections.synchronizedMap(new HashMap());
 
-    public NioClient(InetAddress hostAddress, int port, EchoWorker worker) throws IOException {
+    public NioClient(InetAddress hostAddress, int port) throws IOException {
         this.hostAddress = hostAddress;
         this.port = port;
         this.selector = SelectorProvider.provider().openSelector();
-        this.worker = worker;
     }
 
     public static void main(String[] args) {
         try {
-            EchoWorker worker = new EchoWorker();
-            new Thread(worker).start();
-            new Thread(new NioClient(null, 9090, worker)).start();
-        } catch (IOException e) {
+            NioClient client = new NioClient(InetAddress.getByName("localhost"), 9090);
+            Thread t = new Thread(client);
+            t.setDaemon(true);
+            t.start();
+            RspHandler handler = new RspHandler();
+            client.send("Hello World".getBytes(), handler);
+            handler.waitForResponse();
+        } catch (Exception e) {
             e.printStackTrace();
         }
     }
@@ -151,5 +154,78 @@ public class NioClient implements Runnable {
 
         // Register an interest in writing on this channel
         key.interestOps(SelectionKey.OP_WRITE);
+    }
+
+    private void handleResponse(SocketChannel socketChannel, byte[] data, int numRead) throws IOException {
+        // Make a correctly sized copy of the data before handing it
+        // to the client
+        byte[] rspData = new byte[numRead];
+        System.arraycopy(data, 0, rspData, 0, numRead);
+
+        // Look up the handler for this channel
+        RspHandler handler = (RspHandler) this.rspHandlers.get(socketChannel);
+
+        // And pass the response to it
+        if (handler.handleResponse(rspData)) {
+            // The handler has seen enough, close the connection
+            socketChannel.close();
+            socketChannel.keyFor(this.selector).cancel();
+        }
+    }
+
+    private void write(SelectionKey key) throws IOException {
+        SocketChannel socketChannel = (SocketChannel) key.channel();
+
+        synchronized (this.pendingData) {
+            List queue = (List) this.pendingData.get(socketChannel);
+
+            // Write until there's not more data ...
+            while (!queue.isEmpty()) {
+                ByteBuffer buf = (ByteBuffer) queue.get(0);
+                socketChannel.write(buf);
+                if (buf.remaining() > 0) {
+                    // ... or the socket's buffer fills up
+                    break;
+                }
+                queue.remove(0);
+            }
+
+            if (queue.isEmpty()) {
+                // We wrote away all data, so we're no longer interested
+                // in writing on this socket. Switch back to waiting for
+                // data.
+                key.interestOps(SelectionKey.OP_READ);
+            }
+        }
+    }
+
+    private void read(SelectionKey key) throws IOException {
+        SocketChannel socketChannel = (SocketChannel) key.channel();
+
+        // Clear out our read buffer so it's ready for new data
+        this.readBuffer.clear();
+
+        // Attempt to read off the channel
+        int numRead;
+        try {
+            numRead = socketChannel.read(this.readBuffer);
+        } catch (IOException e) {
+            // The remote forcibly closed the connection, cancel
+            // the selection key and close the channel.
+            key.cancel();
+            socketChannel.close();
+            return;
+        }
+
+        if (numRead == -1) {
+            // Remote entity shut the socket down cleanly. Do the
+            // same from our end and cancel the channel.
+            key.channel().close();
+            key.cancel();
+            return;
+        }
+
+        // Handle the response
+        this.handleResponse(socketChannel, this.readBuffer.array(), numRead);
     }
 }

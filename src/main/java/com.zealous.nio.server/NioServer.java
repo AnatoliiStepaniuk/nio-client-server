@@ -105,7 +105,7 @@ public class NioServer implements Runnable {
 
         // Register the server socket channel, indicating an interest in
         // accepting new connections
-        serverChannel.register(socketSelector, SelectionKey.OP_ACCEPT); // TODO: на что влияет операция интереса?
+        serverChannel.register(socketSelector, SelectionKey.OP_ACCEPT);
 
         return socketSelector;
     }

@@ -31,8 +31,10 @@ public class EchoWorker implements Runnable {
                 dataEvent = (ServerDataEvent) queue.remove(0);
             }
 
+            String response = new String(dataEvent.data) + " : From Server";
+
             // Return to sender
-            dataEvent.server.send(dataEvent.socket, dataEvent.data);
+            dataEvent.server.send(dataEvent.socket, response.getBytes());
         }
     }
 }
